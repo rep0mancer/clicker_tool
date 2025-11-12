@@ -413,10 +413,10 @@ $updateActionButton=Create-Button 10 190 100 30 "Update Action" -clickAction {
         # Update properties based on type, with validation
         if($a.Type -eq "Click"){
             try{ $a.XRel=[double]$editXRelTextBox.Text; $a.YRel=[double]$editYRelTextBox.Text; $a.Input=$editInputTextBox.Text; Write-Host "[EVENT]   Click properties updated."} # DEBUG
-            catch{[System.Windows.Forms.MessageBox]::Show("Invalid Click props (XRel/YRel must be numbers).","Error",0,16); Write-Host "[EVENT]   Error updating Click properties: $($_.Exception.Message)"; return} # DEBUG
+            catch{[System.Windows.Forms.MessageBox]::Show("Invalid Click props (XRel/YRel must be numbers).","Error",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error); Write-Host "[EVENT]   Error updating Click properties: $($_.Exception.Message)"; return} # DEBUG
         }elseif($a.Type -eq "Sleep"){
             try{$dur=[int]$editDurationTextBox.Text; if($dur -lt 0){throw "Duration must be non-negative."}; $a.Duration=$dur; Write-Host "[EVENT]   Sleep duration updated."} # DEBUG
-            catch{[System.Windows.Forms.MessageBox]::Show("Invalid Sleep duration (must be non-negative integer).","Error",0,16); Write-Host "[EVENT]   Error updating Sleep duration: $($_.Exception.Message)"; return} # DEBUG
+            catch{[System.Windows.Forms.MessageBox]::Show("Invalid Sleep duration (must be non-negative integer).","Error",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error); Write-Host "[EVENT]   Error updating Sleep duration: $($_.Exception.Message)"; return} # DEBUG
         }
         Update-ListBox; # Refresh listbox display
         $listBox.SelectedIndex=$idx # Keep item selected
@@ -554,7 +554,7 @@ $runButton = Create-Button -x $actionButtonX -y $runButtonY -width 150 -height 3
 $runButton.Add_Click({
     Write-Host "[EVENT] Run Automation Button Clicked" # DEBUG Event Trigger
     # Determine the repeat count
-    $processRepeatCount = 1; if ($repeatTextBox.Text.Trim() -ne "") { try { $processRepeatCount = [int]$repeatTextBox.Text; if($processRepeatCount -le 0) { throw } } catch { [void][System.Windows.Forms.MessageBox]::Show("Invalid Repeat (>0). Using 1.","Warn",0,48); $processRepeatCount = 1; $repeatTextBox.Text = "1" } }
+    $processRepeatCount = 1; if ($repeatTextBox.Text.Trim() -ne "") { try { $processRepeatCount = [int]$repeatTextBox.Text; if($processRepeatCount -le 0) { throw } } catch { [void][System.Windows.Forms.MessageBox]::Show("Invalid Repeat (>0). Using 1.","Warn",[System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Warning); $processRepeatCount = 1; $repeatTextBox.Text = "1" } }
     # Check grid data rows (excluding the potential 'new row')
     $dataRowCount = $dataGridView.Rows.Count; if ($dataGridView.AllowUserToAddRows) { $dataRowCount-- }
 
@@ -815,7 +815,7 @@ $form.Controls.Add($dataGridView)
 $form.Add_KeyDown({
     param($sender, $e) # Event arguments
     # F9 Key: Capture mouse coordinates
-    if ($e.KeyCode -eq 'F9') {
+    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::F9) {
         $pos = [System.Windows.Forms.Cursor]::Position; $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
         if ($screen.Width -le 0 -or $screen.Height -le 0) { return } # Safety check
         $xr = $pos.X / $screen.Width; $yr = $pos.Y / $screen.Height # Calculate relative coords
@@ -827,7 +827,7 @@ $form.Add_KeyDown({
         $e.Handled = $true; $e.SuppressKeyPress = $true; # Mark event as handled, suppress system beep
     }
     # Escape Key: Cancel editing state
-    if ($e.KeyCode -eq 'Escape') {
+    if ($e.KeyCode -eq [System.Windows.Forms.Keys]::Escape) {
         # Only act if the edit groupbox is currently enabled
         if ($editActionGroupBox.Enabled) {
             Write-Host "[EVENT] Escape key pressed - cancelling edit." # DEBUG
