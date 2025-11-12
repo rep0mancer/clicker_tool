@@ -740,7 +740,7 @@ $saveGridButton = Create-Button -x (10 + ($gridButtonWidth + 5) * 2) -y $gridBut
      if ($sfd.ShowDialog() -eq 'OK') {
         Write-Host "[EVENT]   Saving grid data to $($sfd.FileName)" # DEBUG
         try {
-            $dataToExport = [System.Collections.Generic.List[PSCustomObject]]::new() # List to hold data rows
+            $dataToExport = [System.Collections.Generic.List[PSObject]]::new() # List to hold data rows
             $columnNames = $dataGridView.Columns | ForEach-Object { $_.Name } # Get current grid column names
             if ($columnNames.Count -eq 0) { throw "Grid has no columns to export." } # Cannot export if no columns
 
