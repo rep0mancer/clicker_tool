@@ -1,4 +1,4 @@
-﻿# DYNAMIC_FINAL_FINAL_refactored_pwsh5.ps1
+# DYNAMIC_FINAL_FINAL_refactored_pwsh5.ps1
 # -----------------------------------------------------------------------------
 # Windows PowerShell 5.1–compatible refactor
 #  - Removed PowerShell 7 operators (??, ?., ?:)
@@ -151,7 +151,11 @@ function Save-Sequence([string]$path){ ($global:Actions | ConvertTo-Json -Depth 
 function Load-Sequence([string]$path){
   $global:Actions.Clear() | Out-Null
   $loaded = Get-Content -Path $path -Raw | ConvertFrom-Json
-  foreach($a in $loaded){ [void]$global:Actions.Add([hashtable]$a.PSObject.Copy()) }
+  foreach($a in $loaded){
+    $h = @{}
+    $a.PSObject.Properties | ForEach-Object { $h[$_.Name] = $_.Value }
+    [void]$global:Actions.Add($h)
+  }
 }
 
 # --- Playback ----------------------------------------------------------------
@@ -255,7 +259,7 @@ $btnAddSleep.Add_Click({
   $sel = $list.SelectedIndex
   $a = New-SleepAction 500
   if($sel -ge 0){ $global:Actions.Insert($sel+1,$a) } else { [void]$global:Actions.Add($a) }
- RRefresh-List; $list.SelectedIndex = ([Math]::Min($global:Actions.Count-1, [Math]::Max(0,$sel+1)))
+ Refresh-List; $list.SelectedIndex = ([Math]::Min($global:Actions.Count-1, [Math]::Max(0,$sel+1)))
 })
 $grp.Controls.Add($btnAddSleep)
 
@@ -309,10 +313,10 @@ $btnUpdate.Add_Click({
     try{ $a.Duration = [int]$txtDur.Text; if($a.Duration -lt 0){ throw 'Duration must be >= 0' } }
     catch { [System.Windows.Forms.MessageBox]::Show("Invalid duration: " + $_.Exception.Message); return }
   }
-  RRefresh-List; $list.SelectedIndex=$idx; Populate-Editor
+  Refresh-List; $list.SelectedIndex=$idx; Populate-Editor
 })
 
-$btnDelete.Add_Click({ $idx=$list.SelectedIndex; if($idx -ge 0){ $global:Actions.RemoveAt($idx)); Refresh-List; ons.Count -gt 0){ $list.SelectedIndex=[Math]::Min($idx, $global:Actions.Count-1) } else { $list.ClearSelected() }; Populate-Editor } })
+$btnDelete.Add_Click({ $idx=$list.SelectedIndex; if($idx -ge 0){ $global:Actions.RemoveAt($idx); Refresh-List; if($global:Actions.Count -gt 0){ $list.SelectedIndex=[Math]::Min($idx, $global:Actions.Count-1) } else { $list.ClearSelected() }; Populate-Editor } })
 $btnCancel.Add_Click({ Populate-Editor })
 
 # Save/Load/Run
@@ -322,7 +326,7 @@ $btnRun.Add_Click({ Play-Sequence })
 $btnSave = New-Object System.Windows.Forms.Button; $btnSave.Text='Save…'; $btnSave.Location='110,25'; $btnSave.Width=90; $grp2.Controls.Add($btnSave)
 $btnSave.Add_Click({ $dlg = New-Object System.Windows.Forms.SaveFileDialog; $dlg.Filter='JSON (*.json)|*.json|All files (*.*)|*.*'; if($dlg.ShowDialog() -eq 'OK'){ Save-Sequence $dlg.FileName } })
 $btnLoad = New-Object System.Windows.Forms.Button; $btnLoad.Text='Load…'; $btnLoad.Location='210,25'; $btnLoad.Width=90; $grp2.Controls.Add($btnLoad)
-$btnLoad.Add_Click({ $dlg = New-Object System.Windows.Forms.OpenFileDialog; $dlg.Filter='JSON (*.json)|*.json|All files (*.*)|*.*'; if($dlg.ShowDialog() -eq 'OK'){ Load-Sequence $dlg.FileName; Refresh-ListitorRefresh-List; 
+$btnLoad.Add_Click({ $dlg = New-Object System.Windows.Forms.OpenFileDialog; $dlg.Filter='JSON (*.json)|*.json|All files (*.*)|*.*'; if($dlg.ShowDialog() -eq 'OK'){ Load-Sequence $dlg.FileName; Refresh-List } }) 
 $lblDbc = New-Object System.Windows.Forms.Label; $lblDbc.Text='Before click (ms)'; $lblDbc.Location='10,60'; $lblDbc.AutoSize=$true; $grp2.Controls.Add($lblDbc)
 $txtDbc = New-Object System.Windows.Forms.TextBox; $txtDbc.Location='120,57'; $txtDbc.Width=60; $txtDbc.Text=$global:DelayBeforeClick; $grp2.Controls.Add($txtDbc)
 $lblDac = New-Object System.Windows.Forms.Label; $lblDac.Text='After click (ms)'; $lblDac.Location='10,85'; $lblDac.AutoSize=$true; $grp2.Controls.Add($lblDac)
