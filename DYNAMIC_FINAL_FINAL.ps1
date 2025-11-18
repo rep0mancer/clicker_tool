@@ -845,6 +845,11 @@ $runButton = Create-Button -x $actionButtonX -y $runButtonY -width 150 -height 3
 # --- Verwende die KORRIGIERTE Run Button Logik, erweitert um UIA (Parser-Fix + {Return}-Fix + VARIABLES TIMEOUT) ---
 $runButton.Add_Click({
     Write-Host "[EVENT] Run Automation Button Clicked" # DEBUG Event Trigger
+    if ($global:AutomationState -ne "Idle") {
+        Write-Warning "[RUN] Ignoring Run request because automation state is '$global:AutomationState'."
+        [void][System.Windows.Forms.MessageBox]::Show("Automation is already running. Please stop or resume the current run before starting a new one.", "Automation Busy", 0, 'Information')
+        return
+    }
     $global:AutomationState = "Running"
     try {
     # (Repeat count logic...)
