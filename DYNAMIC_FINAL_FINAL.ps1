@@ -246,10 +246,27 @@ $global:DelayBetweenActions = 1500 # Milliseconds delay after completing each ac
 # Initialize the global list to store the sequence of actions (using ArrayList for flexibility)
 $global:Actions = [System.Collections.ArrayList]::new()
 
+# Automation state for hotkeys
+$global:AutomationState = "Idle"   # Idle, Running, Paused, StopRequested
+
 # Define regex patterns for identifying variable placeholders in action inputs
 $global:VariableInputPlaceholderPattern = '^%%VARIABLE_INPUT_(\d+)%%$' # For exact match (less used now)
 $global:VariableInputScanPattern = '%%VARIABLE_INPUT_(\d+)%%' # For finding placeholders anywhere within a string
 #endregion Global Parameters and Actions
+
+# Pause/Stop helper for automation loops
+function Wait-IfPaused {
+    # While paused, keep UI responsive and wait
+    while ($global:AutomationState -eq "Paused") {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 100
+    }
+
+    # If a stop was requested, abort the automation
+    if ($global:AutomationState -eq "StopRequested") {
+        throw "Automation stopped by user."
+    }
+}
 
 #region GUI Functions and Elements
 
@@ -828,6 +845,13 @@ $runButton = Create-Button -x $actionButtonX -y $runButtonY -width 150 -height 3
 # --- Verwende die KORRIGIERTE Run Button Logik, erweitert um UIA (Parser-Fix + {Return}-Fix + VARIABLES TIMEOUT) ---
 $runButton.Add_Click({
     Write-Host "[EVENT] Run Automation Button Clicked" # DEBUG Event Trigger
+    if ($global:AutomationState -ne "Idle") {
+        Write-Warning "[RUN] Ignoring Run request because automation state is '$global:AutomationState'."
+        [void][System.Windows.Forms.MessageBox]::Show("Automation is already running. Please stop or resume the current run before starting a new one.", "Automation Busy", 0, 'Information')
+        return
+    }
+    $global:AutomationState = "Running"
+    try {
     # (Repeat count logic...)
     $processRepeatCount = 1; if ($repeatTextBox.Text.Trim() -ne "") { try { $processRepeatCount = [int]$repeatTextBox.Text; if($processRepeatCount -le 0) { throw } } catch { [void][System.Windows.Forms.MessageBox]::Show("Invalid Repeat (>0). Using 1.","Warn",0,48); $processRepeatCount = 1; $repeatTextBox.Text = "1" } }
     $dataRowCount = $dataGridView.Rows.Count; if ($dataGridView.AllowUserToAddRows) { $dataRowCount-- }
@@ -839,14 +863,17 @@ $runButton.Add_Click({
         Write-Host "[RUN] Starting automation with grid data..."
         
         for ($pr = 1; $pr -le $processRepeatCount; $pr++) { # Process Repeats
+            Wait-IfPaused
             Write-Host "[RUN]  Starting Process Repeat #$pr"
             $rowIndex = 0
             foreach ($gridRow in $dataGridView.Rows) { # Grid Rows
                 if ($gridRow.IsNewRow) { continue }
+                Wait-IfPaused
                 $rowIndex++
                 Write-Host "[RUN]   Running sequence for Grid Row #$rowIndex"
                 $actionIndex = 0
                 foreach ($action in $global:Actions) { # Actions
+                    Wait-IfPaused
                     $actionIndex++
                     Write-Host "[RUN]    Executing Action #$actionIndex : $($action.Type)"
                     
@@ -934,9 +961,11 @@ $runButton.Add_Click({
         Write-Host "[RUN] Starting automation normally (no grid data)..."
         
         for ($r = 1; $r -le $processRepeatCount; $r++) { # Repeats
+            Wait-IfPaused
             Write-Host "[RUN]  Starting Repeat #$r"
             $actionIndex = 0
             foreach ($action in $global:Actions) { # Actions
+                Wait-IfPaused
                 $actionIndex++
                 Write-Host "[RUN]   Executing Action #$actionIndex : $($action.Type)"
                 # --- Click Action Logic (Normal Mode) ---
@@ -996,6 +1025,14 @@ $runButton.Add_Click({
         } # End repeats
          Write-Host "[RUN] Automation complete (Normal Mode)."
          [void][System.Windows.Forms.MessageBox]::Show("Automation complete.", "Finished", 0, 'Information')
+    }
+    }
+    catch {
+        Write-Warning "Automation aborted: $($_.Exception.Message)"
+    }
+    finally {
+        $global:AutomationState = "Idle"
+        Write-Host "[INFO] Automation finished (or stopped)."
     }
 })
 $runButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
@@ -1281,8 +1318,12 @@ $listBox.Add_SelectedIndexChanged({
 # --- Global F9 / STRG+F9 Learning (works even if form not focused) ---
 $VK_F9      = 0x78  # Virtual-Key code for F9
 $VK_CONTROL = 0x11  # Virtual-Key code for Ctrl
+$VK_F2      = 0x71
+$VK_F3      = 0x72
 
 $script:lastF9Down = $false
+$script:lastF2Down = $false
+$script:lastF3Down = $false
 
 $globalHotkeyTimer = New-Object System.Windows.Forms.Timer
 $globalHotkeyTimer.Interval = 60  # ms; ~16 times per second
@@ -1306,6 +1347,34 @@ $globalHotkeyTimer.Add_Tick({
 
     # Remember current F9 state to detect "edge"
     $script:lastF9Down = $isF9Down
+
+    # F2: toggle Pause / Continue
+    $f2State   = [KeyboardNative]::GetAsyncKeyState($VK_F2)
+    $isF2Down  = ($f2State -band 0x8000) -ne 0
+
+    if ($isF2Down -and -not $script:lastF2Down) {
+        if ($global:AutomationState -eq "Running") {
+            $global:AutomationState = "Paused"
+            Write-Host "[INFO] Automation paused (F2)."
+        }
+        elseif ($global:AutomationState -eq "Paused") {
+            $global:AutomationState = "Running"
+            Write-Host "[INFO] Automation resumed (F2)."
+        }
+    }
+    $script:lastF2Down = $isF2Down
+
+    # F3: request Stop
+    $f3State   = [KeyboardNative]::GetAsyncKeyState($VK_F3)
+    $isF3Down  = ($f3State -band 0x8000) -ne 0
+
+    if ($isF3Down -and -not $script:lastF3Down) {
+        if ($global:AutomationState -in @("Running","Paused")) {
+            $global:AutomationState = "StopRequested"
+            Write-Host "[INFO] Automation stop requested (F3)."
+        }
+    }
+    $script:lastF3Down = $isF3Down
 })
 
 $globalHotkeyTimer.Start()
