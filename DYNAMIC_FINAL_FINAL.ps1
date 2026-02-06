@@ -306,16 +306,20 @@ $global:VariableInputScanPattern = '%%VARIABLE_INPUT_(\d+)%%' # For finding plac
 # Replaces Start-Sleep inside automation loops. Sleeps in small chunks,
 # pumping the WinForms message queue each iteration so the UI stays
 # responsive and the $global:StopAutomation flag is honoured immediately.
+# Returns $true when the full duration elapsed, or $false if interrupted
+# by $global:StopAutomation (so callers can simply:
+#   if (-not (Start-Sleep-Responsive -Milliseconds $ms)) { break }
+# ).
 function Start-Sleep-Responsive {
     param(
         [Parameter(Mandatory=$true)]
         [int]$Milliseconds
     )
-    if ($Milliseconds -le 0) { return }
+    if ($Milliseconds -le 0) { return $true }
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     while ($stopwatch.ElapsedMilliseconds -lt $Milliseconds) {
         [System.Windows.Forms.Application]::DoEvents()
-        if ($global:StopAutomation) { break }
+        if ($global:StopAutomation) { $stopwatch.Stop(); return $false }
         # Sleep in small increments (50 ms) so the loop re-checks quickly
         $remaining = $Milliseconds - $stopwatch.ElapsedMilliseconds
         if ($remaining -le 0) { break }
@@ -323,6 +327,7 @@ function Start-Sleep-Responsive {
         Start-Sleep -Milliseconds $chunk
     }
     $stopwatch.Stop()
+    return $true
 }
 #endregion Responsive Sleep Helper
 
@@ -968,8 +973,7 @@ $runButton.Add_Click({
                     # --- Click Action Logic ---
                     if ($action.Type -eq "Click") {
                         Move-And-Click -xRel $action.XRel -yRel $action.YRel
-                        Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick
-                        if ($global:StopAutomation) { break }
+                        if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick)) { break }
                         # (Input logic...)
                         if ($action.PSObject.Properties.Name -contains 'Input' -and $action.Input -and $action.Input.Trim() -ne "") {
                             $processedInput = $action.Input
@@ -987,8 +991,7 @@ $runButton.Add_Click({
                                 Write-Host "[RUN]     Sending processed input: '$processedInput'"
                                 $sendkeysInput = $processedInput -replace '\{Return\}', '{ENTER}'
                                 [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                                Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick
-                                if ($global:StopAutomation) { break }
+                                if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick)) { break }
                             }
                         }
                         Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
@@ -1008,8 +1011,7 @@ $runButton.Add_Click({
                             Highlight-UIAElement -element $element
                             
                             Invoke-UIAElementClick -element $element
-                            Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick
-                            if ($global:StopAutomation) { break }
+                            if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick)) { break }
                             # (Input logic...)
                             if ($action.PSObject.Properties.Name -contains 'Input' -and $action.Input -and $action.Input.Trim() -ne "") {
                                 $processedInput = $action.Input
@@ -1039,8 +1041,7 @@ $runButton.Add_Click({
                                         Write-Host "[RUN]     [UIA] Injection skipped or failed. Falling back to SendKeys: '$processedInput'"
                                         $sendkeysInput = $processedInput -replace '\{Return\}', '{ENTER}'
                                         [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                                        Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick
-                                        if ($global:StopAutomation) { break }
+                                        if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick)) { break }
                                     }
                                 }
                             }
@@ -1052,8 +1053,7 @@ $runButton.Add_Click({
                     # --- Sleep Action Logic ---
                     } elseif ($action.Type -eq "Sleep") {
                         Write-Host "[RUN]     Sleeping for $($action.Duration) ms"
-                        Start-Sleep-Responsive -Milliseconds $action.Duration
-                        if ($global:StopAutomation) { break }
+                        if (-not (Start-Sleep-Responsive -Milliseconds $action.Duration)) { break }
                         Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
                     }
                 } # End actions
@@ -1090,8 +1090,7 @@ $runButton.Add_Click({
                 # --- Click Action Logic (Normal Mode) ---
                 if ($action.Type -eq "Click") {
                     Move-And-Click -xRel $action.XRel -yRel $action.YRel
-                    Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick
-                    if ($global:StopAutomation) { break }
+                    if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick)) { break }
                     # (Input logic...)
                     if ($action.PSObject.Properties.Name -contains 'Input' -and $action.Input -and $action.Input.Trim() -ne "") {
                         if ($action.Input -match $global:VariableInputScanPattern) {
@@ -1100,8 +1099,7 @@ $runButton.Add_Click({
                             Write-Host "[RUN]     Sending static input: $($action.Input)"
                             $sendkeysInput = $action.Input -replace '\{Return\}', '{ENTER}'
                             [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                            Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick
-                            if ($global:StopAutomation) { break }
+                            if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick)) { break }
                         }
                     }
                     Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
@@ -1121,8 +1119,7 @@ $runButton.Add_Click({
                         Highlight-UIAElement -element $element
                         
                         Invoke-UIAElementClick -element $element
-                        Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick
-                        if ($global:StopAutomation) { break }
+                        if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick)) { break }
                         # (Input logic...)
                         if ($action.PSObject.Properties.Name -contains 'Input' -and $action.Input -and $action.Input.Trim() -ne "") {
                             if ($action.Input -match $global:VariableInputScanPattern) {
@@ -1143,8 +1140,7 @@ $runButton.Add_Click({
                                     Write-Host "[RUN]     [UIA] Injection skipped or failed. Falling back to SendKeys."
                                     $sendkeysInput = $action.Input -replace '\{Return\}', '{ENTER}'
                                     [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                                    Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick
-                                    if ($global:StopAutomation) { break }
+                                    if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick)) { break }
                                 }
                             }
                         }
@@ -1156,8 +1152,7 @@ $runButton.Add_Click({
                 # --- Sleep Action Logic (Normal Mode) ---
                 } elseif ($action.Type -eq "Sleep") {
                     Write-Host "[RUN]     Sleeping for $($action.Duration) ms"
-                    Start-Sleep-Responsive -Milliseconds $action.Duration
-                    if ($global:StopAutomation) { break }
+                    if (-not (Start-Sleep-Responsive -Milliseconds $action.Duration)) { break }
                     Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
                 }
             } # End actions
@@ -1456,17 +1451,17 @@ $listBox.Add_SelectedIndexChanged({
 
 # --- ListBox Drag & Drop Reordering ---
 $listBox.AllowDrop = $true
-# Track the index being dragged
-$script:dragOriginIndex = -1
 
 $listBox.Add_MouseDown({
     param($sender, $e)
     # Only initiate drag on left-click over a valid item
     if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-        $script:dragOriginIndex = $sender.IndexFromPoint($e.Location)
-        if ($script:dragOriginIndex -ge 0) {
-            # Start the drag operation, passing the index as data
-            $sender.DoDragDrop($script:dragOriginIndex, [System.Windows.Forms.DragDropEffects]::Move) | Out-Null
+        $dragIndex = $sender.IndexFromPoint($e.Location)
+        if ($dragIndex -ge 0) {
+            # Pass the source index directly through DoDragDrop so the
+            # DragDrop handler can retrieve it from $e.Data -- no need
+            # for a fragile script-scoped variable.
+            $sender.DoDragDrop($dragIndex, [System.Windows.Forms.DragDropEffects]::Move) | Out-Null
         }
     }
 })
@@ -1479,13 +1474,15 @@ $listBox.Add_DragOver({
 
 $listBox.Add_DragDrop({
     param($sender, $e)
+    # Retrieve the source index that was passed through DoDragDrop
+    $sourceIndex = [int]$e.Data.GetData([Type]'System.Int32')
+
     # Determine where the item was dropped
     $dropPoint = $sender.PointToClient([System.Windows.Forms.Cursor]::Position)
     $dropIndex = $sender.IndexFromPoint($dropPoint)
-    # If dropped outside any item, append to the end
-    if ($dropIndex -lt 0) { $dropIndex = $sender.Items.Count - 1 }
+    # If dropped below all items, append to the end of the list
+    if ($dropIndex -lt 0) { $dropIndex = $sender.Items.Count }
 
-    $sourceIndex = $script:dragOriginIndex
     if ($sourceIndex -ge 0 -and $sourceIndex -ne $dropIndex) {
         Write-Host "[EVENT] Drag & Drop: Moving item from index $sourceIndex to $dropIndex"
         # Move the action in the global list
@@ -1500,7 +1497,6 @@ $listBox.Add_DragDrop({
         Update-ListBox
         $sender.SelectedIndex = $dropIndex
     }
-    $script:dragOriginIndex = -1
 })
 
 # --- ListBox Double-Click to Edit ---
