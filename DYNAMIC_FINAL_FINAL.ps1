@@ -302,6 +302,35 @@ $global:VariableInputPlaceholderPattern = '^%%VARIABLE_INPUT_(\d+)%%$' # For exa
 $global:VariableInputScanPattern = '%%VARIABLE_INPUT_(\d+)%%' # For finding placeholders anywhere within a string
 #endregion Global Parameters and Actions
 
+#region Responsive Sleep Helper
+# Replaces Start-Sleep inside automation loops. Sleeps in small chunks,
+# pumping the WinForms message queue each iteration so the UI stays
+# responsive and the $global:StopAutomation flag is honoured immediately.
+# Returns $true when the full duration elapsed, or $false if interrupted
+# by $global:StopAutomation (so callers can simply:
+#   if (-not (Start-Sleep-Responsive -Milliseconds $ms)) { break }
+# ).
+function Start-Sleep-Responsive {
+    param(
+        [Parameter(Mandatory=$true)]
+        [int]$Milliseconds
+    )
+    if ($Milliseconds -le 0) { return $true }
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($stopwatch.ElapsedMilliseconds -lt $Milliseconds) {
+        [System.Windows.Forms.Application]::DoEvents()
+        if ($global:StopAutomation) { $stopwatch.Stop(); return $false }
+        # Sleep in small increments (50 ms) so the loop re-checks quickly
+        $remaining = $Milliseconds - $stopwatch.ElapsedMilliseconds
+        if ($remaining -le 0) { break }
+        $chunk = [Math]::Min(50, $remaining)
+        Start-Sleep -Milliseconds $chunk
+    }
+    $stopwatch.Stop()
+    return $true
+}
+#endregion Responsive Sleep Helper
+
 #region GUI Functions and Elements
 
 
@@ -574,6 +603,8 @@ $editActionButton.Add_Click({
              Write-Host "[EVENT]   Populating Click fields..." # DEBUG
              $editXRelLabel.Visible = $true; $editXRelTextBox.Visible = $true
              $editYRelLabel.Visible = $true; $editYRelTextBox.Visible = $true
+             $editXRelTextBox.Text = $selectedAction.XRel
+             $editYRelTextBox.Text = $selectedAction.YRel
              $editInputTextBox.Text = $selectedAction.Input
              
         } elseif ($selectedAction.Type -eq "Sleep") {
@@ -942,7 +973,7 @@ $runButton.Add_Click({
                     # --- Click Action Logic ---
                     if ($action.Type -eq "Click") {
                         Move-And-Click -xRel $action.XRel -yRel $action.YRel
-                        Start-Sleep -Milliseconds $global:DelayBeforeClick
+                        if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick)) { break }
                         # (Input logic...)
                         if ($action.PSObject.Properties.Name -contains 'Input' -and $action.Input -and $action.Input.Trim() -ne "") {
                             $processedInput = $action.Input
@@ -960,10 +991,10 @@ $runButton.Add_Click({
                                 Write-Host "[RUN]     Sending processed input: '$processedInput'"
                                 $sendkeysInput = $processedInput -replace '\{Return\}', '{ENTER}'
                                 [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                                Start-Sleep -Milliseconds $global:DelayAfterClick
+                                if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick)) { break }
                             }
                         }
-                        Start-Sleep -Milliseconds $global:DelayBetweenActions
+                        Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
                     
                     # --- UIA-Click Action Logic (Grid Mode) ---
                     } elseif ($action.Type -eq "UIA-Click") {
@@ -980,7 +1011,7 @@ $runButton.Add_Click({
                             Highlight-UIAElement -element $element
                             
                             Invoke-UIAElementClick -element $element
-                            Start-Sleep -Milliseconds $global:DelayBeforeClick
+                            if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick)) { break }
                             # (Input logic...)
                             if ($action.PSObject.Properties.Name -contains 'Input' -and $action.Input -and $action.Input.Trim() -ne "") {
                                 $processedInput = $action.Input
@@ -1010,27 +1041,20 @@ $runButton.Add_Click({
                                         Write-Host "[RUN]     [UIA] Injection skipped or failed. Falling back to SendKeys: '$processedInput'"
                                         $sendkeysInput = $processedInput -replace '\{Return\}', '{ENTER}'
                                         [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                                        Start-Sleep -Milliseconds $global:DelayAfterClick
+                                        if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick)) { break }
                                     }
                                 }
                             }
                         } else {
                             Write-Warning "[RUN]    [UIA] Aktion #${actionIndex}: Element NICHT gefunden. Aktion übersprungen."
                         }
-                        Start-Sleep -Milliseconds $global:DelayBetweenActions
+                        Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
                     
                     # --- Sleep Action Logic ---
                     } elseif ($action.Type -eq "Sleep") {
                         Write-Host "[RUN]     Sleeping for $($action.Duration) ms"
-                        # Break sleep into chunks to allow UI updates/Stop button
-                        $slept = 0
-                        while ($slept -lt $action.Duration) {
-                            [System.Windows.Forms.Application]::DoEvents()
-                            if ($global:StopAutomation) { break }
-                            Start-Sleep -Milliseconds 50
-                            $slept += 50
-                        }
-                        Start-Sleep -Milliseconds $global:DelayBetweenActions
+                        if (-not (Start-Sleep-Responsive -Milliseconds $action.Duration)) { break }
+                        Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
                     }
                 } # End actions
                 if ($global:StopAutomation) { break }
@@ -1066,7 +1090,7 @@ $runButton.Add_Click({
                 # --- Click Action Logic (Normal Mode) ---
                 if ($action.Type -eq "Click") {
                     Move-And-Click -xRel $action.XRel -yRel $action.YRel
-                    Start-Sleep -Milliseconds $global:DelayBeforeClick
+                    if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick)) { break }
                     # (Input logic...)
                     if ($action.PSObject.Properties.Name -contains 'Input' -and $action.Input -and $action.Input.Trim() -ne "") {
                         if ($action.Input -match $global:VariableInputScanPattern) {
@@ -1075,10 +1099,10 @@ $runButton.Add_Click({
                             Write-Host "[RUN]     Sending static input: $($action.Input)"
                             $sendkeysInput = $action.Input -replace '\{Return\}', '{ENTER}'
                             [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                            Start-Sleep -Milliseconds $global:DelayAfterClick
+                            if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick)) { break }
                         }
                     }
-                    Start-Sleep -Milliseconds $global:DelayBetweenActions
+                    Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
                 
                 # --- UIA-Click Action Logic (Normal Mode) ---
                 } elseif ($action.Type -eq "UIA-Click") {
@@ -1095,7 +1119,7 @@ $runButton.Add_Click({
                         Highlight-UIAElement -element $element
                         
                         Invoke-UIAElementClick -element $element
-                        Start-Sleep -Milliseconds $global:DelayBeforeClick
+                        if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayBeforeClick)) { break }
                         # (Input logic...)
                         if ($action.PSObject.Properties.Name -contains 'Input' -and $action.Input -and $action.Input.Trim() -ne "") {
                             if ($action.Input -match $global:VariableInputScanPattern) {
@@ -1116,27 +1140,20 @@ $runButton.Add_Click({
                                     Write-Host "[RUN]     [UIA] Injection skipped or failed. Falling back to SendKeys."
                                     $sendkeysInput = $action.Input -replace '\{Return\}', '{ENTER}'
                                     [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                                    Start-Sleep -Milliseconds $global:DelayAfterClick
+                                    if (-not (Start-Sleep-Responsive -Milliseconds $global:DelayAfterClick)) { break }
                                 }
                             }
                         }
                     } else {
                         Write-Warning "[RUN]    [UIA] Aktion #${actionIndex}: Element NICHT gefunden. Aktion übersprungen."
                     }
-                    Start-Sleep -Milliseconds $global:DelayBetweenActions
+                    Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
                 
                 # --- Sleep Action Logic (Normal Mode) ---
                 } elseif ($action.Type -eq "Sleep") {
                     Write-Host "[RUN]     Sleeping for $($action.Duration) ms"
-                    # Break sleep into chunks
-                    $slept = 0
-                    while ($slept -lt $action.Duration) {
-                        [System.Windows.Forms.Application]::DoEvents()
-                        if ($global:StopAutomation) { break }
-                        Start-Sleep -Milliseconds 50
-                        $slept += 50
-                    }
-                    Start-Sleep -Milliseconds $global:DelayBetweenActions
+                    if (-not (Start-Sleep-Responsive -Milliseconds $action.Duration)) { break }
+                    Start-Sleep-Responsive -Milliseconds $global:DelayBetweenActions
                 }
             } # End actions
              if ($global:StopAutomation) { break }
@@ -1430,6 +1447,66 @@ $listBox.Add_SelectedIndexChanged({
         }
     }
     # Note: We don't automatically enable the box on selection; user must click 'Edit Action' button
+})
+
+# --- ListBox Drag & Drop Reordering ---
+$listBox.AllowDrop = $true
+
+$listBox.Add_MouseDown({
+    param($sender, $e)
+    # Only initiate drag on left-click over a valid item
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+        $dragIndex = $sender.IndexFromPoint($e.Location)
+        if ($dragIndex -ge 0) {
+            # Pass the source index directly through DoDragDrop so the
+            # DragDrop handler can retrieve it from $e.Data -- no need
+            # for a fragile script-scoped variable.
+            $sender.DoDragDrop($dragIndex, [System.Windows.Forms.DragDropEffects]::Move) | Out-Null
+        }
+    }
+})
+
+$listBox.Add_DragOver({
+    param($sender, $e)
+    # Allow the move effect while dragging over the listbox
+    $e.Effect = [System.Windows.Forms.DragDropEffects]::Move
+})
+
+$listBox.Add_DragDrop({
+    param($sender, $e)
+    # Retrieve the source index that was passed through DoDragDrop
+    $sourceIndex = [int]$e.Data.GetData([Type]'System.Int32')
+
+    # Determine where the item was dropped
+    $dropPoint = $sender.PointToClient([System.Windows.Forms.Cursor]::Position)
+    $dropIndex = $sender.IndexFromPoint($dropPoint)
+    # If dropped below all items, append to the end of the list
+    if ($dropIndex -lt 0) { $dropIndex = $sender.Items.Count }
+
+    if ($sourceIndex -ge 0 -and $sourceIndex -ne $dropIndex) {
+        Write-Host "[EVENT] Drag & Drop: Moving item from index $sourceIndex to $dropIndex"
+        # Move the action in the global list
+        $itemToMove = $global:Actions[$sourceIndex]
+        $global:Actions.RemoveAt($sourceIndex)
+        # Adjust target index if the source was above the target (list shifted after removal)
+        if ($dropIndex -gt $sourceIndex) { $dropIndex-- }
+        # Clamp just in case
+        if ($dropIndex -lt 0) { $dropIndex = 0 }
+        if ($dropIndex -gt $global:Actions.Count) { $dropIndex = $global:Actions.Count }
+        $global:Actions.Insert($dropIndex, $itemToMove)
+        Update-ListBox
+        $sender.SelectedIndex = $dropIndex
+    }
+})
+
+# --- ListBox Double-Click to Edit ---
+$listBox.Add_DoubleClick({
+    param($sender, $e)
+    if ($sender.SelectedIndex -ge 0) {
+        Write-Host "[EVENT] ListBox Double-Click on index $($sender.SelectedIndex) - triggering Edit Action"
+        # Programmatically invoke the Edit Action button's click handler
+        $editActionButton.PerformClick()
+    }
 })
 
 # --- Global F9 / STRG+F9 Learning (works even if form not focused) ---
