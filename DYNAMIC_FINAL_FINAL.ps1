@@ -7,6 +7,7 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 # --- ENDE ---
 #endregion Assembly Loading
+
 # --- Global keyboard state (for F9 / Ctrl+F9 even when form is not active) ---
 Add-Type @"
 using System;
@@ -18,9 +19,6 @@ public static class KeyboardNative {
 }
 "@
 # --- ENDE Global keyboard state ---
-
-
-
 
 #region MouseSimulator Class
 # Defines a class to interact with the low-level mouse_event API
@@ -84,6 +82,31 @@ function Move-And-Click {
 #endregion MouseSimulator Class
 
 #region UIA Helper Functions
+
+# --- NEW FEATURE: The "Sight" (Visual Highlighter) ---
+# Draws a red box around the target element so you can see what the machine sees.
+function Highlight-UIAElement {
+    param (
+        [System.Windows.Automation.AutomationElement]$element
+    )
+    if (-not $element) { return }
+
+    try {
+        $rect = $element.Current.BoundingRectangle
+        if ($rect.IsEmpty) { return }
+
+        # Use ControlPaint.DrawReversibleFrame for a quick, dirty, overlay-free highlight
+        # We draw it, wait a split second, and draw it again to erase it (XOR operation)
+        $drawRect = [System.Drawing.Rectangle]::new([int]$rect.X, [int]$rect.Y, [int]$rect.Width, [int]$rect.Height)
+        [System.Windows.Forms.ControlPaint]::DrawReversibleFrame($drawRect, [System.Drawing.Color]::Red, [System.Windows.Forms.FrameStyle]::Thick)
+        Start-Sleep -Milliseconds 300
+        [System.Windows.Forms.ControlPaint]::DrawReversibleFrame($drawRect, [System.Drawing.Color]::Red, [System.Windows.Forms.FrameStyle]::Thick)
+    } catch {
+        Write-Warning "Could not highlight element."
+    }
+}
+# --- END NEW FEATURE ---
+
 # Holt das UIA-Element (z.B. Button, Textfeld) direkt unter dem Mauszeiger
 function Get-UIAElementFromCursor {
     try {
@@ -155,6 +178,9 @@ function Find-UIAElement {
     # Schleife, die auf das Element wartet (bis Timeout)
     $foundElement = $null
     while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        # Allow UI to breathe during search loop
+        [System.Windows.Forms.Application]::DoEvents() 
+        
         $foundElement = $rootElement.FindFirst("Subtree", $condition)
         if ($foundElement) {
             Write-Host "[UIA-FIND]   Element gefunden!"
@@ -235,6 +261,29 @@ function Invoke-UIAElementClick {
         return $false
     }
 }
+
+# --- NEW FEATURE: Value Injection (The "Injection") ---
+# Attempts to set value directly via ValuePattern instead of fragile SendKeys
+function Set-UIAElementValue {
+    param(
+        [Parameter(Mandatory=$true)]
+        [System.Windows.Automation.AutomationElement]$element,
+        [string]$value
+    )
+    try {
+        $valPattern = $null
+        if ($element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$valPattern)) {
+            Write-Host "[UIA-VALUE]   Setting value directly via ValuePattern: '$value'"
+            $valPattern.SetValue($value)
+            return $true
+        }
+        return $false
+    } catch {
+        Write-Warning "[UIA-VALUE]   Failed to set value: $($_.Exception.Message)"
+        return $false
+    }
+}
+# --- END NEW FEATURE ---
 #endregion UIA Helper Functions
 
 #region Global Parameters and Actions
@@ -245,28 +294,13 @@ $global:DelayBetweenActions = 1500 # Milliseconds delay after completing each ac
 
 # Initialize the global list to store the sequence of actions (using ArrayList for flexibility)
 $global:Actions = [System.Collections.ArrayList]::new()
-
-# Automation state for hotkeys
-$global:AutomationState = "Idle"   # Idle, Running, Paused, StopRequested
+# Emergency Stop Flag
+$global:StopAutomation = $false
 
 # Define regex patterns for identifying variable placeholders in action inputs
 $global:VariableInputPlaceholderPattern = '^%%VARIABLE_INPUT_(\d+)%%$' # For exact match (less used now)
 $global:VariableInputScanPattern = '%%VARIABLE_INPUT_(\d+)%%' # For finding placeholders anywhere within a string
 #endregion Global Parameters and Actions
-
-# Pause/Stop helper for automation loops
-function Wait-IfPaused {
-    # While paused, keep UI responsive and wait
-    while ($global:AutomationState -eq "Paused") {
-        [System.Windows.Forms.Application]::DoEvents()
-        Start-Sleep -Milliseconds 100
-    }
-
-    # If a stop was requested, abort the automation
-    if ($global:AutomationState -eq "StopRequested") {
-        throw "Automation stopped by user."
-    }
-}
 
 #region GUI Functions and Elements
 
@@ -389,7 +423,7 @@ function Create-TrackBar { param([int]$x,[int]$y,[int]$width,[int]$min,[int]$max
 #region Form Creation and Controls
 # Create the main application window (Form)
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Steiner's Automatisierer QoL (Debug 2)" # Window title updated
+$form.Text = "Steiner's Automatisierer QoL (Debug 2) - UNCHAINED" # Window title updated
 $form.Size = New-Object System.Drawing.Size(750, 900) # Initial size (Width, Height)
 $form.StartPosition = "CenterScreen" # Start the form in the center of the screen
 $form.KeyPreview = $true # Allow the form to receive key events before controls do (for F9/Escape)
@@ -624,7 +658,15 @@ $form.Controls.Add($delayTrackBar)
 
 # --- Input Attachment / Edit Action Area --- (Below Delay Slider, Left Side)
 # (Größe auf 330 erhöht und Y-Positionen der Steuerelemente korrigiert)
-$editActionGroupBox = New-Object System.Windows.Forms.GroupBox; $editActionGroupBox.Location = New-Object System.Drawing.Point(10, 270); $editActionGroupBox.Size = New-Object System.Drawing.Size(400, 330); $editActionGroupBox.Text = "Edit Selected Action / Attach Input"; $editActionGroupBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left; $form.Controls.Add($editActionGroupBox)
+$editActionGroupBox = New-Object System.Windows.Forms.GroupBox; 
+# MORPHEUS: We shift the Y-Coordinate to 300 to avoid the collision with the slider.
+# MORPHEUS: We add the 'Right' anchor so the box expands with your mind (and the window).
+$editActionGroupBox.Location = New-Object System.Drawing.Point(10, 300); 
+$editActionGroupBox.Size = New-Object System.Drawing.Size(400, 330); 
+$editActionGroupBox.Text = "Edit Selected Action / Attach Input"; 
+$editActionGroupBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right; 
+$form.Controls.Add($editActionGroupBox)
+
 # (Controls inside GroupBox - created using factory functions)
 $editActionTypeLabel=Create-Label 10 20 80 20 "Type:";$editActionGroupBox.Controls.Add($editActionTypeLabel)
 $editActionTypeTextBox=Create-TextBox 90 20 100 20;$editActionTypeTextBox.ReadOnly=$true;$editActionGroupBox.Controls.Add($editActionTypeTextBox)
@@ -640,25 +682,30 @@ $editDurationLabel=Create-Label 10 50 80 20 "Duration:";$editDurationLabel.Visib
 $editDurationTextBox=Create-TextBox 90 50 100 20;$editDurationTextBox.Visible=$false;$editActionGroupBox.Controls.Add($editDurationTextBox)
 
 # --- UIA-Click Felder --- (Y=50, Y=80, Y=110, Y=140)
+# MORPHEUS: These fields now anchor Right to utilize the space you provide.
 $editUiaIdLabel = Create-Label 10 50 80 20 "AutomationId:"
 $editUiaIdLabel.Visible = $false;$editActionGroupBox.Controls.Add($editUiaIdLabel)
 $editUiaIdTextBox = Create-TextBox 90 50 290 20
+$editUiaIdTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $editUiaIdTextBox.Visible = $false;$editActionGroupBox.Controls.Add($editUiaIdTextBox)
 
 $editUiaNameLabel = Create-Label 10 80 80 20 "Name:"
 $editUiaNameLabel.Visible = $false;$editActionGroupBox.Controls.Add($editUiaNameLabel)
 $editUiaNameTextBox = Create-TextBox 90 80 290 20
+$editUiaNameTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $editUiaNameTextBox.Visible = $false;$editActionGroupBox.Controls.Add($editUiaNameTextBox)
 
 $editUiaClassLabel = Create-Label 10 110 80 20 "ClassName:"
 $editUiaClassLabel.Visible = $false;$editActionGroupBox.Controls.Add($editUiaClassLabel)
 $editUiaClassTextBox = Create-TextBox 90 110 290 20
+$editUiaClassTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $editUiaClassTextBox.Visible = $false;$editActionGroupBox.Controls.Add($editUiaClassTextBox)
 
 # --- NEUES CONTROLTYPE-FELD --- (Y=140)
 $editUiaControlTypeLabel = Create-Label 10 140 80 20 "ControlType:"
 $editUiaControlTypeLabel.Visible = $false;$editActionGroupBox.Controls.Add($editUiaControlTypeLabel)
 $editUiaControlTypeTextbox = Create-TextBox 90 140 290 20
+$editUiaControlTypeTextbox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $editUiaControlTypeTextbox.Visible = $false;$editActionGroupBox.Controls.Add($editUiaControlTypeTextbox)
 # --- ENDE NEU ---
 
@@ -670,7 +717,9 @@ $editUiaTimeoutTextBox.Visible = $false;$editActionGroupBox.Controls.Add($editUi
 
 # --- Gemeinsame Input Felder --- (Y=200, Y=245)
 $editInputLabel=Create-Label 10 200 80 20 "Input:";$editActionGroupBox.Controls.Add($editInputLabel)
-$editInputTextBox=Create-TextBox 90 200 290 40;$editInputTextBox.Multiline=$true;$editInputTextBox.ScrollBars="Vertical";$editActionGroupBox.Controls.Add($editInputTextBox)
+$editInputTextBox=Create-TextBox 90 200 290 40;$editInputTextBox.Multiline=$true;$editInputTextBox.ScrollBars="Vertical"
+$editInputTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+$editActionGroupBox.Controls.Add($editInputTextBox)
 $editInputInstrLabel=Create-Label 10 245 380 30 "Use '%%VARIABLE_INPUT_N%%' for grid column N.";$editActionGroupBox.Controls.Add($editInputInstrLabel)
 
 # --- Update/Cancel Buttons --- (Y=290)
@@ -837,21 +886,26 @@ $repeatTextBox = Create-TextBox -x ($actionButtonX + 155) -y $repeatY -width 55 
 $repeatTextBox.Text = "1"; $repeatTextBox.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
 $form.Controls.Add($repeatTextBox)
 
+# --- Stop Button (Emergency Stop) --- (Below Repeat)
+$stopButtonY = $repeatY + 35
+$stopButton = Create-Button -x $actionButtonX -y $stopButtonY -width 150 -height 30 -text "STOP AUTOMATION" -clickAction {
+    $global:StopAutomation = $true
+    Write-Host "[STOP] Automation Stop requested by user!" -ForegroundColor Red
+}
+$stopButton.BackColor = [System.Drawing.Color]::LightPink
+$stopButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+$form.Controls.Add($stopButton)
+
 
 # --- Run Automation Button --- (Right Side)
-$runButtonY = $repeatY + $repeatTextBox.Height + 10
+$runButtonY = $stopButtonY + 40
 $runButton = Create-Button -x $actionButtonX -y $runButtonY -width 150 -height 30 -text "Run Automation"
 # --- Use the CORRECTED Run Button logic that handles combined input ---
 # --- Verwende die KORRIGIERTE Run Button Logik, erweitert um UIA (Parser-Fix + {Return}-Fix + VARIABLES TIMEOUT) ---
 $runButton.Add_Click({
     Write-Host "[EVENT] Run Automation Button Clicked" # DEBUG Event Trigger
-    if ($global:AutomationState -ne "Idle") {
-        Write-Warning "[RUN] Ignoring Run request because automation state is '$global:AutomationState'."
-        [void][System.Windows.Forms.MessageBox]::Show("Automation is already running. Please stop or resume the current run before starting a new one.", "Automation Busy", 0, 'Information')
-        return
-    }
-    $global:AutomationState = "Running"
-    try {
+    $global:StopAutomation = $false # Reset stop flag
+    
     # (Repeat count logic...)
     $processRepeatCount = 1; if ($repeatTextBox.Text.Trim() -ne "") { try { $processRepeatCount = [int]$repeatTextBox.Text; if($processRepeatCount -le 0) { throw } } catch { [void][System.Windows.Forms.MessageBox]::Show("Invalid Repeat (>0). Using 1.","Warn",0,48); $processRepeatCount = 1; $repeatTextBox.Text = "1" } }
     $dataRowCount = $dataGridView.Rows.Count; if ($dataGridView.AllowUserToAddRows) { $dataRowCount-- }
@@ -862,18 +916,26 @@ $runButton.Add_Click({
         if ([System.Windows.Forms.MessageBox]::Show("Run sequence using $dataRowCount data row(s) from grid? Process repeats $processRepeatCount time(s).", "Confirm Run", 'OKCancel', 'Question') -ne 'OK') { Write-Host "[RUN]   Run cancelled by user."; return }
         Write-Host "[RUN] Starting automation with grid data..."
         
-        for ($pr = 1; $pr -le $processRepeatCount; $pr++) { # Process Repeats
-            Wait-IfPaused
+        # --- OUTER LOOP (Process Repeats) ---
+        for ($pr = 1; $pr -le $processRepeatCount; $pr++) { 
+            if ($global:StopAutomation) { break }
             Write-Host "[RUN]  Starting Process Repeat #$pr"
             $rowIndex = 0
-            foreach ($gridRow in $dataGridView.Rows) { # Grid Rows
+            
+            # --- MIDDLE LOOP (Grid Rows) ---
+            foreach ($gridRow in $dataGridView.Rows) { 
+                if ($global:StopAutomation) { break }
                 if ($gridRow.IsNewRow) { continue }
-                Wait-IfPaused
                 $rowIndex++
                 Write-Host "[RUN]   Running sequence for Grid Row #$rowIndex"
                 $actionIndex = 0
-                foreach ($action in $global:Actions) { # Actions
-                    Wait-IfPaused
+                
+                # --- INNER LOOP (Actions) ---
+                foreach ($action in $global:Actions) { 
+                    # Check Stop Flag and process events to keep UI responsive
+                    [System.Windows.Forms.Application]::DoEvents()
+                    if ($global:StopAutomation) { Write-Warning "[STOP] Emergency Stop Triggered!"; break }
+                    
                     $actionIndex++
                     Write-Host "[RUN]    Executing Action #$actionIndex : $($action.Type)"
                     
@@ -914,6 +976,9 @@ $runButton.Add_Click({
                         # --- ENDE NEU ---
                         
                         if ($element) {
+                            # --- NEW: HIGHLIGHT ---
+                            Highlight-UIAElement -element $element
+                            
                             Invoke-UIAElementClick -element $element
                             Start-Sleep -Milliseconds $global:DelayBeforeClick
                             # (Input logic...)
@@ -930,10 +995,23 @@ $runButton.Add_Click({
                                     }
                                 }
                                 if ($processedInput.Trim() -ne "") {
-                                    Write-Host "[RUN]     [UIA] Sending processed input: '$processedInput'"
-                                    $sendkeysInput = $processedInput -replace '\{Return\}', '{ENTER}'
-                                    [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                                    Start-Sleep -Milliseconds $global:DelayAfterClick
+                                    # --- MORPHEUS LOGIC: Check for Special Keys ---
+                                    $containsSpecialKeys = $processedInput -match '\{.+\}'
+                                    $valueSetSuccess = $false
+                                    
+                                    if (-not $containsSpecialKeys) {
+                                        # Only try direct injection if no special keys are found
+                                        $valueSetSuccess = Set-UIAElementValue -element $element -value $processedInput
+                                    } else {
+                                        Write-Host "[RUN]     [UIA] Special keys detected (e.g. {BS}). Skipping Injection, using SendKeys."
+                                    }
+                                    
+                                    if (-not $valueSetSuccess) {
+                                        Write-Host "[RUN]     [UIA] Injection skipped or failed. Falling back to SendKeys: '$processedInput'"
+                                        $sendkeysInput = $processedInput -replace '\{Return\}', '{ENTER}'
+                                        [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
+                                        Start-Sleep -Milliseconds $global:DelayAfterClick
+                                    }
                                 }
                             }
                         } else {
@@ -944,15 +1022,29 @@ $runButton.Add_Click({
                     # --- Sleep Action Logic ---
                     } elseif ($action.Type -eq "Sleep") {
                         Write-Host "[RUN]     Sleeping for $($action.Duration) ms"
-                        Start-Sleep -Milliseconds $action.Duration
+                        # Break sleep into chunks to allow UI updates/Stop button
+                        $slept = 0
+                        while ($slept -lt $action.Duration) {
+                            [System.Windows.Forms.Application]::DoEvents()
+                            if ($global:StopAutomation) { break }
+                            Start-Sleep -Milliseconds 50
+                            $slept += 50
+                        }
                         Start-Sleep -Milliseconds $global:DelayBetweenActions
                     }
                 } # End actions
+                if ($global:StopAutomation) { break }
             } # End grid rows
+             if ($global:StopAutomation) { break }
              Write-Host "[RUN]  Process Repeat #$pr Complete"
         } # End process repeats
-        Write-Host "[RUN] Automation complete (Grid Mode)."
-        [void][System.Windows.Forms.MessageBox]::Show("Automation complete.", "Finished", 0, 'Information')
+        
+        if ($global:StopAutomation) {
+             [void][System.Windows.Forms.MessageBox]::Show("Automation STOPPED by user.", "Stopped", 0, 'Warning')
+        } else {
+            Write-Host "[RUN] Automation complete (Grid Mode)."
+            [void][System.Windows.Forms.MessageBox]::Show("Automation complete.", "Finished", 0, 'Information')
+        }
 
     } else { # Normal Mode
         # (Normal Mode confirmation...)
@@ -961,11 +1053,14 @@ $runButton.Add_Click({
         Write-Host "[RUN] Starting automation normally (no grid data)..."
         
         for ($r = 1; $r -le $processRepeatCount; $r++) { # Repeats
-            Wait-IfPaused
+            if ($global:StopAutomation) { break }
             Write-Host "[RUN]  Starting Repeat #$r"
             $actionIndex = 0
             foreach ($action in $global:Actions) { # Actions
-                Wait-IfPaused
+                # Check Stop Flag and process events
+                [System.Windows.Forms.Application]::DoEvents()
+                if ($global:StopAutomation) { Write-Warning "[STOP] Emergency Stop Triggered!"; break }
+                
                 $actionIndex++
                 Write-Host "[RUN]   Executing Action #$actionIndex : $($action.Type)"
                 # --- Click Action Logic (Normal Mode) ---
@@ -996,6 +1091,9 @@ $runButton.Add_Click({
                     # --- ENDE NEU ---
                     
                     if ($element) {
+                        # --- NEW: HIGHLIGHT ---
+                        Highlight-UIAElement -element $element
+                        
                         Invoke-UIAElementClick -element $element
                         Start-Sleep -Milliseconds $global:DelayBeforeClick
                         # (Input logic...)
@@ -1003,10 +1101,23 @@ $runButton.Add_Click({
                             if ($action.Input -match $global:VariableInputScanPattern) {
                                 Write-Warning "[RUN]    [UIA] Action #${actionIndex}: marked for variable input ('$($action.Input)'), but no grid data is present. Input step skipped."
                             } else {
-                                Write-Host "[RUN]     [UIA] Sending static input: $($action.Input)"
-                                $sendkeysInput = $action.Input -replace '\{Return\}', '{ENTER}'
-                                [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
-                                Start-Sleep -Milliseconds $global:DelayAfterClick
+                                # --- MORPHEUS LOGIC: Check for Special Keys ---
+                                $containsSpecialKeys = $action.Input -match '\{.+\}'
+                                $valueSetSuccess = $false
+                                
+                                if (-not $containsSpecialKeys) {
+                                    # Only try direct injection if no special keys are found
+                                    $valueSetSuccess = Set-UIAElementValue -element $element -value $action.Input
+                                } else {
+                                     Write-Host "[RUN]     [UIA] Special keys detected (e.g. {BS}). Skipping Injection, using SendKeys."
+                                }
+                                
+                                if (-not $valueSetSuccess) {
+                                    Write-Host "[RUN]     [UIA] Injection skipped or failed. Falling back to SendKeys."
+                                    $sendkeysInput = $action.Input -replace '\{Return\}', '{ENTER}'
+                                    [System.Windows.Forms.SendKeys]::SendWait($sendkeysInput)
+                                    Start-Sleep -Milliseconds $global:DelayAfterClick
+                                }
                             }
                         }
                     } else {
@@ -1017,22 +1128,26 @@ $runButton.Add_Click({
                 # --- Sleep Action Logic (Normal Mode) ---
                 } elseif ($action.Type -eq "Sleep") {
                     Write-Host "[RUN]     Sleeping for $($action.Duration) ms"
-                    Start-Sleep -Milliseconds $action.Duration
+                    # Break sleep into chunks
+                    $slept = 0
+                    while ($slept -lt $action.Duration) {
+                        [System.Windows.Forms.Application]::DoEvents()
+                        if ($global:StopAutomation) { break }
+                        Start-Sleep -Milliseconds 50
+                        $slept += 50
+                    }
                     Start-Sleep -Milliseconds $global:DelayBetweenActions
                 }
             } # End actions
+             if ($global:StopAutomation) { break }
              Write-Host "[RUN]  Repeat #$r Complete"
         } # End repeats
-         Write-Host "[RUN] Automation complete (Normal Mode)."
-         [void][System.Windows.Forms.MessageBox]::Show("Automation complete.", "Finished", 0, 'Information')
-    }
-    }
-    catch {
-        Write-Warning "Automation aborted: $($_.Exception.Message)"
-    }
-    finally {
-        $global:AutomationState = "Idle"
-        Write-Host "[INFO] Automation finished (or stopped)."
+         if ($global:StopAutomation) {
+             [void][System.Windows.Forms.MessageBox]::Show("Automation STOPPED by user.", "Stopped", 0, 'Warning')
+         } else {
+             Write-Host "[RUN] Automation complete (Normal Mode)."
+             [void][System.Windows.Forms.MessageBox]::Show("Automation complete.", "Finished", 0, 'Information')
+         }
     }
 })
 $runButton.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
@@ -1209,6 +1324,10 @@ function Add-UIAClickFromCursor {
     Write-Host "[DEBUG] UIA Capture (STRG+F9) ausgelöst (global)."
     $element = Get-UIAElementFromCursor
     if ($element) {
+        # --- VISUAL CONFIRMATION DURING CAPTURE ---
+        Highlight-UIAElement -element $element
+        # ------------------------------------------
+        
         $info = $element.Current
         $identifiers = @{
             Name         = $info.Name
@@ -1256,12 +1375,6 @@ $form.Add_KeyDown({
         $e.Handled = $true; $e.SuppressKeyPress = $true
     }
 
-    # F10 etc… (leave as you have it)
-    if ($e.KeyCode -eq 'F10') {
-        ...
-    }
-})
-
     
     # --- NEU: F10 Key: Inspect UIA Element (Diagnose-Modus) ---
     if ($e.KeyCode -eq 'F10') {
@@ -1269,6 +1382,9 @@ $form.Add_KeyDown({
         $element = Get-UIAElementFromCursor
         
         if ($element) {
+            # --- VISUAL CONFIRMATION DURING INSPECT ---
+            Highlight-UIAElement -element $element
+            
             $info = $element.Current
             # Baue eine detaillierte Nachricht für das Popup-Fenster
             $message = @(
@@ -1299,6 +1415,7 @@ $form.Add_KeyDown({
             $e.Handled = $true; $e.SuppressKeyPress = $true;
         }
     }
+})
 
 # --- ListBox Selection Changed Handler ---
 # Handles enabling/disabling the edit groupbox when selection changes
@@ -1318,12 +1435,8 @@ $listBox.Add_SelectedIndexChanged({
 # --- Global F9 / STRG+F9 Learning (works even if form not focused) ---
 $VK_F9      = 0x78  # Virtual-Key code for F9
 $VK_CONTROL = 0x11  # Virtual-Key code for Ctrl
-$VK_F2      = 0x71
-$VK_F3      = 0x72
 
 $script:lastF9Down = $false
-$script:lastF2Down = $false
-$script:lastF3Down = $false
 
 $globalHotkeyTimer = New-Object System.Windows.Forms.Timer
 $globalHotkeyTimer.Interval = 60  # ms; ~16 times per second
@@ -1347,34 +1460,6 @@ $globalHotkeyTimer.Add_Tick({
 
     # Remember current F9 state to detect "edge"
     $script:lastF9Down = $isF9Down
-
-    # F2: toggle Pause / Continue
-    $f2State   = [KeyboardNative]::GetAsyncKeyState($VK_F2)
-    $isF2Down  = ($f2State -band 0x8000) -ne 0
-
-    if ($isF2Down -and -not $script:lastF2Down) {
-        if ($global:AutomationState -eq "Running") {
-            $global:AutomationState = "Paused"
-            Write-Host "[INFO] Automation paused (F2)."
-        }
-        elseif ($global:AutomationState -eq "Paused") {
-            $global:AutomationState = "Running"
-            Write-Host "[INFO] Automation resumed (F2)."
-        }
-    }
-    $script:lastF2Down = $isF2Down
-
-    # F3: request Stop
-    $f3State   = [KeyboardNative]::GetAsyncKeyState($VK_F3)
-    $isF3Down  = ($f3State -band 0x8000) -ne 0
-
-    if ($isF3Down -and -not $script:lastF3Down) {
-        if ($global:AutomationState -in @("Running","Paused")) {
-            $global:AutomationState = "StopRequested"
-            Write-Host "[INFO] Automation stop requested (F3)."
-        }
-    }
-    $script:lastF3Down = $isF3Down
 })
 
 $globalHotkeyTimer.Start()
